@@ -5,3 +5,7 @@
 ## Status
 
 Implementation is in final stages. You can read high level [whitepaper](https://github.com/beviah/inat/blob/main/inat-whitepaper.md). 
+
+## License
+
+Apache2.0
