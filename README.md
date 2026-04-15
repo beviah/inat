@@ -4,8 +4,18 @@
 
 ## Status
 
-Implementation is in final stages. You can read high level [whitepaper](https://github.com/beviah/inat/blob/main/inat-whitepaper.md). 
+Implementation is in final stages. 
+
+You can read high level [whitepaper](https://github.com/beviah/inat/blob/main/inat-whitepaper.md). 
+
+You can read detailed specification [specification](https://github.com/beviah/inat/blob/main/inat_protocol.md). 
 
 ## License
 
+Inat protocol whitepaper and specification:
+
 Apache2.0
+
+Inat implementation:
+
+BSL with transition to Apache2.0 within 4 years of publication
