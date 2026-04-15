@@ -1272,6 +1272,7 @@ A node whitelisting 5 assets sends 5 heartbeats per interval (one per asset-shar
 
 #### 19.2.1 — Depth Hysteresis
 
+```python
 SHARD_SPLIT_THRESHOLD = 1.2 * SHARD_MAX_DENSITY    # 2400
 SHARD_MERGE_THRESHOLD = 0.8 * SHARD_MIN_DENSITY     # 600
 # NOTE: SHARD_MIN_DENSITY = 750 is derived, not arbitrary:
@@ -1281,6 +1282,7 @@ SHARD_MERGE_THRESHOLD = 0.8 * SHARD_MIN_DENSITY     # 600
 #   MERGE_THRESHOLD = 600 → expected = 17.4 → triggers merge before
 #   quorum becomes unreachable.
 DEPTH_CHANGE_COOLDOWN = 600                          # 10 minutes
+```
 
 Depth increases only when density exceeds SPLIT for COOLDOWN duration
 Depth decreases only when density drops below MERGE for COOLDOWN duration
