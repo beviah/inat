@@ -8,7 +8,7 @@
 
 ## Abstract
 
-Inat is an open protocol for bilateral value transfer achieving transaction finality through zero-knowledge proofs, threshold cryptography, and distributed witness attestation — without a shared ledger, central operator, or consensus mechanism. Each wallet holds a **slot** — a value container whose liveness is anchored in a single persistent counter stored in the wallet's own P2P document. To transfer value, sender and recipient each sign a commitment; a randomly-selected quorum of witnesses attests the transfer is valid; the nullifier is reconstructed via threshold cryptography once both sides have committed, making reversal mathematically impossible; and the entire history of the slot collapses into a constant-size proof that any party can verify in under a millisecond. No blockchain, no consensus, no central operator.
+Inat is an open protocol for bilateral value transfer achieving transaction finality through zero-knowledge proofs, threshold cryptography, and distributed witness attestation — without a shared ledger, central operator, or consensus mechanism. Each wallet holds a **slot** — a value container whose liveness is anchored in an append-only entry log in the wallet's own P2P document, where each entry is one phase transition and one `protocol_seq` increment. To transfer value, sender and recipient each sign a commitment; a randomly-selected quorum of witnesses attests the transfer is valid; the nullifier is reconstructed via threshold cryptography once both sides have committed, making reversal mathematically impossible; and the entire history of the slot collapses into a constant-size proof that any party can verify in under a millisecond. Each party writes exactly four doc entries per transaction (SEQ_STRIDE=4), with output slots materializing at a deterministic offset. No blockchain, no consensus, no central operator.
 
 ---
 
@@ -26,9 +26,10 @@ Inat eliminates the shared ledger entirely. Instead:
 
 - **Wallet documents** serve as the primary persistent anchor — each wallet's P2P document contains `protocol_seq`, the authoritative record of slot liveness. Monotonic sequencing prevents rollback; distributed subscriptions provide replication.
 - **Deterministic nullifiers** published during active transactions provide race condition detection between concurrent spends.
+- **Self-contained fold proofs** absorb all transaction evidence — VRF proofs, witness eligibility headers, signatures, lineage, issuer key registry membership. Verifiers need only the proof and a cached key registry; no external lookups, no shared ledger, no historical chain of eligibility lists.
 - **Zero-knowledge proofs** validate balance sufficiency, witnessed transaction history, and issuer-attested genesis, folded into constant-size verification.
 - **Threshold cryptography** makes finalization inevitable once bilateral commitment is achieved.
-- **Distributed witnesses** selected via verifiable random functions attest transaction validity.
+- **Distributed witnesses** selected via verifiable random functions attest transaction validity; eligibility is issuer-gated via directly-delivered signed headers (no public eligibility registry).
 
 A dormant wallet needs only its document's sequence entry to determine slot liveness. The ZK proof then validates the claimed state: correct balance, properly witnessed history, valid issuer chain.
 
@@ -36,12 +37,14 @@ A dormant wallet needs only its document's sequence entry to determine slot live
 
 | Principle | Meaning |
 |-----------|---------|
-| **The oracle persists, the proof validates** | The wallet document is the persistent anchor; ZK proofs validate balance, witness history, and issuer genesis. Neither alone suffices. |
+| **The oracle persists, the proof validates** | The wallet document's append-only entry log is the persistent anchor; ZK proofs validate balance, witness history, and issuer genesis. Neither alone suffices. One entry per phase transition; supplementary data in blobs via CID. |
 | **Witnesses validate math, not data** | ZK proofs encode all transaction logic; witnesses verify cryptographic validity only. |
 | **Finalization is inevitable, not voluntary** | Once threshold shares are distributed, no party can prevent completion. |
 | **Shard observers learn less than witnesses** | Two-phase witness engagement: gossip broadcasts carry only lottery data; identity and proof data reach only selected witnesses. |
 | **Issuer-gated, decentralized-executed** | Witness admission is permissioned; transacting requires only a keypair and funded slot. The issuer is the bouncer for the witness pool, not for the venue. |
 | **Symmetric participation** | Every funded, issuer-approved wallet is eligible to witness for others, incentivized via fee shares. |
+| **Gossip-ZK parity** | Every gossip-level routing constraint (shard membership, witness selection) is also enforced at the ZK circuit level. No security property relies solely on network-layer behavior. |
+| **Self-contained proofs** | Fold proofs absorb all evidence at proving time — witness eligibility headers, VRF proofs, signatures, lineage. Verifiers need only a cached key registry; no external blob lookups required. |
 
 ### 1.4 Key Properties
 
@@ -53,6 +56,7 @@ A dormant wallet needs only its document's sequence entry to determine slot live
 | **No witness griefing** | VRF selection + shard hopping across phases |
 | **Privacy** | ZK proofs hide amounts, identities, and history from witnesses |
 | **O(1) verification** | ~560 byte proof, <1ms verification, regardless of history depth |
+| **Per-phase seq stride** | SEQ_STRIDE=4: one doc entry per phase transition per party. Output at base+4, forward at base+8. Entry model: one doc.set() per phase, supplementary data in blobs via CID. |
 | **GC-resistant** | Oracle persists; proof carries validated history; old data safely collected |
 | **Issuer-gated identity** | VRF eligibility requires issuer approval + funded wallet |
 
@@ -119,7 +123,7 @@ nullifier_commit = H(nullifier)
 identity_commit  = H(pk)
 ```
 
-Liveness rule: `protocol_seq == creation_seq → live; > creation_seq → dead`.
+Liveness rule: the latest entry's `event_type` for the slot's `session_id` determines status. A slot is live if it was created at `base_seq + SEQ_STRIDE` and no subsequent spend entry exists. The entry model (one `doc.set()` per phase transition) makes `protocol_seq` equal to the Iroh entry sequence number by construction.
 
 This enables wallet recovery from a single secret key, sequence-based liveness checking via a single integer, and ZK-verifiable nullifier binding. Each `(sk, seq)` pair maps to exactly one slot with no address reuse ambiguity.
 
@@ -127,7 +131,7 @@ This enables wallet recovery from a single secret key, sequence-based liveness c
 
 Inat cleanly separates two orthogonal concerns:
 
-**Identity layer (slot liveness):** One `sk/pk` = one identity = one slot at any given sequence. Liveness is an O(1) lookup from the wallet document. Rollback prevention is enforced by infrastructure-level monotonic sequencing.
+**Identity layer (slot liveness):** One `sk/pk` = one identity = one slot at any given sequence. Liveness is an O(1) read of the latest doc entry's `event_type`. Rollback prevention is structural — the append-only hash-chained entry log makes it unforgeable. Each phase transition writes exactly one entry, incrementing `protocol_seq` by 1.
 
 **Value layer (what the slot holds):** Balance commitments, lineage proofs, issuer family, and the collapsed ZK proof — all independent of identity. O(1) verification regardless of history depth.
 
@@ -139,16 +143,20 @@ Each party independently manages their own slot chain. A transaction consumes th
 
 ```
 SENDER (Alice):
-  Slot seq=N (bal=100) ──spend──▶ Slot seq=N+1 (bal=30, change)
+  Slot seq=N (bal=100) ──spend──▶ Slot seq=N+4 (bal=30, change)
        │
+       │ 4 phase entries: N+1 PENDING_SEND, N+2 COMMITTED,
+       │                  N+3 SPENT, N+4 FINALIZED (output)
        │ nullifier for seq=N published (race detection)
-       │ wallet doc protocol_seq: N → N+1
+       │ forward commit → N+8 (next tx's output)
        │
        │ 70 units transferred
        ▼
 RECIPIENT (Bob):
-  Slot seq=M (bal=50)           Slot seq=M+1 (bal=120, receives)
-                                wallet doc protocol_seq: M → M+1
+  Slot seq=M (bal=50)           Slot seq=M+4 (bal=120, receives)
+                                4 phase entries: M+1 PENDING_RECEIVE,
+                                M+2 COMMITTED, M+3 observed, M+4 READY
+                                forward commit → M+8
 ```
 
 Both sequences advance independently. Both next slots are predetermined from `(sk, seq+1)`. Slot derivation is unilateral. Attestation is bilateral.
@@ -175,22 +183,29 @@ Privacy is structurally enforced through a type-level invariant: only commitment
 ```
 ┌────────────┐  ┌───────────┐  ┌──────────┐  ┌──────────┐
 │PENDING_SEND│─▶│ COMMITTED │─▶│  SPENT   │─▶│FINALIZED │
+│  (seq N+1) │  │  (seq N+2)│  │ (seq N+3)│  │ (seq N+4)│
 └────────────┘  └───────────┘  └──────────┘  └──────────┘
      │               │              │              │
      ▼               ▼              ▼              ▼
  Phase 1:       Phase 2:       Phase 3:       Phase 4:
- Sender signs,  Recipient      W₁ releases    DA confirm,
- W₁ attests +   accepts, W₂₃   shares,        fold into
- holds shares   quorum=locked  nullifier pub  O(1) proof
+ Sender writes  Recipient      W₁ releases    DA confirm,
+ entry N+1,     accepts, W₂₃   shares,        fold into
+ W₁ attests +   quorum=locked  nullifier pub  O(1) proof,
+ holds shares   entry N+2      entry N+3      output at N+4
+
+SEQ_STRIDE = 4. Each phase = one doc entry = one protocol_seq
+increment. Supplementary data (proofs, attestations) in blobs
+referenced by CID from the entry. Output slot materializes at
+base + SEQ_STRIDE. Forward commit at base + 2×SEQ_STRIDE.
 ```
 
-**Phase 1 — Initiate.** Sender increments their own `protocol_seq`, signs a commitment, and broadcasts an intent to the asset-scoped gossip shard. ~29 VRF-selected witnesses independently fetch the sender's wallet document from the P2P network, verify the ZK proof, check that the nullifier hasn't been published, and return attestations. The sender then distributes encrypted Shamir shares to each attesting witness.
+**Phase 1 — Initiate.** Sender signs a commitment and broadcasts an intent to the asset-scoped gossip shard. ~29 VRF-selected witnesses independently fetch the sender's wallet document from the P2P network, verify the ZK proof, check that the nullifier hasn't been published, and return attestations. The sender then distributes encrypted Shamir shares to each selected witness and writes a single doc entry at `base_seq + 1` (event type: PENDING_SEND), with all phase data (proof, attestations, commitments, encrypted shares) stored in a blob referenced by CID.
 
-**Phase 2 — Accept & Commit.** Recipient signs their commitment, increments their own `protocol_seq`, and creates a receiving slot. A fresh set of ~29 witnesses in a *different* shard independently fetch *both* wallet documents, verify bilateral binding, and attest. Once 21 valid attestations arrive — the **point of no return** — the transaction is COMMITTED.
+**Phase 2 — Accept & Commit.** Recipient signs their commitment, writes their PENDING_RECEIVE entry at `recv_base + 1`, and derives a receiving slot at `recv_base + SEQ_STRIDE`. A fresh set of ~29 witnesses in a *different* shard independently fetch *both* wallet documents, verify bilateral binding, and attest. Once 21 valid attestations arrive — the **point of no return** — the transaction is COMMITTED. Both parties write COMMITTED entries (sender at `base + 2`, recipient at `recv_base + 2`).
 
-**Phase 3 — Share Release.** The sender relays the Phase 2 attestation bundle to each Phase 1 witness. They verify the bundle, decrypt their Shamir share, and publish it. Once 21+ shares are public, anyone can reconstruct the nullifier and publish it.
+**Phase 3 — Share Release.** The sender relays the Phase 2 attestation bundle to each Phase 1 witness. They verify the bundle, decrypt their Shamir share, and publish it. Once 21+ shares are public, anyone can reconstruct the nullifier and publish it. Both parties write SPENT entries (sender at `base + 3`, recipient at `recv_base + 3`).
 
-**Phase 4 — Confirm & Fold.** 7 VRF-selected validators in a third shard confirm data availability. The fold circuit absorbs the previous proof plus the current spend record into a new collapsed proof (~560 bytes, <1ms verification). The slot transitions to FINALIZED.
+**Phase 4 — Confirm & Fold.** 7 VRF-selected validators in a third shard confirm data availability. The fold circuit absorbs the previous proof plus the current spend record into a new collapsed proof (~560 bytes, <1ms verification). Both parties write FINALIZED entries at `base + SEQ_STRIDE` (= `base + 4`), where the output slot materializes. The forward commit at `base + 2×SEQ_STRIDE` (= `base + 8`) is bound for the next transaction.
 
 ### 4.2 Point of No Return
 
@@ -274,9 +289,11 @@ At 100M nodes (~131,072 shards), an attacker controlling 10% of the network face
 
 ### 5.5 Issuer-Gated Eligibility
 
-All witnesses must hold an issuer-signed eligibility certificate and minimum balance of the asset. The issuer publishes an `IssuerEligibleRoot` each epoch (~1 hour) — a Merkle root of all eligible wallet PKs. Witnesses carry Merkle proofs of inclusion. The fold circuit verifies these proofs, so fake witnesses without issuer approval cannot produce valid fold proofs.
+All witnesses must hold an issuer-signed eligibility header and minimum balance of the asset. Each epoch (~1 hour), the issuer signs an `IssuerEligibleHeader` containing a Merkle root of all eligible wallet PKs, and delivers the signed header plus each wallet's Merkle proof **directly** to the eligible wallet — point-to-point, not via any gossip topic or shared blob store.
 
-The issuer controls *who can witness*. The protocol determines *which* eligible witnesses are selected. The issuer cannot control transaction outcomes, retroactively censor finalized proofs, or gate who transacts.
+Witnesses carry the full signed header inline when responding to transaction intents. Attestation bundles are self-contained: any verifier with a cached AssetKeyRegistry can verify eligibility without external lookups. The fold circuit binds the header into the proof's hash chain, so once the fold exists, the header itself can be discarded — the proof stands alone.
+
+The issuer controls *who can witness*. The protocol determines *which* eligible witnesses are selected. The issuer can stop renewing headers to revoke future participation — they cannot retroactively invalidate finalized proofs, censor in-flight transactions, or gate who transacts with whom. Forward revocation only.
 
 ---
 
@@ -323,14 +340,29 @@ The collapsed proof guarantees three things about a slot:
 
 ### 7.3 Recursive Folding
 
-Each transaction folds the previous proof into a new proof. The new proof validates: old proof was valid + new transition was properly witnessed + balance math checks out.
+Each transaction folds the previous proof into a new proof. Every protocol assumption is an explicit input to the fold circuit — nothing is trusted from outside the proof's public inputs.
+
+**Fold circuit public inputs (partial list):**
+
+| Category | Inputs | What it enforces |
+|---|---|---|
+| VRF selection | `(witness_pk, vrf_output, vrf_proof)` per witness, per phase | Each witness won the lottery against a hardcoded threshold |
+| Shard membership | `declared_depth`, phase seeds | Each witness's NodeID prefix matches the shard derived from the phase seed |
+| Seed chain | `seed₁`, `seed₂₃`, `seed₄`, beacon rounds | `seed₂₃ = H(seed₁ ‖ H(σ_r) ‖ beacon₂₃ ‖ randomness₂₃)` — phase-to-phase derivation is correct |
+| Issuer eligibility | Signed `IssuerEligibleHeader`, per-witness Merkle proofs | Each witness ∈ issuer's eligible root for the correct epoch |
+| Issuer key validity | `issuer_pk`, `registry_root`, `registry_epoch`, Merkle proof, M-of-N signature chain | Signing key is authorized, registry chains back to genesis |
+| Beacon recency | `beacon_round`, previous fold's `final_beacon_round` | Consecutive folds advance at a real-time rate (max ~20 hours apart) |
+| Balance conservation | Pedersen commitments on input/output/fee | No inflation, no deflation |
+| Lineage | Previous fold proof, genesis record | Chain back to issuer-signed mint |
+
+The fold circuit verifies all of these constraints at proving time. Third-party verifiers check the resulting ~560 byte proof in <1ms — they do not need to fetch the eligible header, the key registry, or any witness data. The proof is self-authenticating.
 
 ```
-Depth 1: verify(issuer_sig, genesis_record) → π_fold_1
+Depth 1: verify(issuer_sig, genesis_record, mint_proof_if_capped) → π_fold_1
 Depth N: verify(π_fold_{N-1}) + verify(phase proofs)
          + verify(7 DA confirmations) + verify(VRF selection)
          + verify(shard membership) + verify(seed chain)
-         + verify(beacon recency) + verify(issuer registry)
+         + verify(beacon recency) + verify(issuer registry + eligibility)
          → π_fold_N  (~560 bytes, <1ms verification)
 ```
 
@@ -338,7 +370,7 @@ The verification cost is always <1ms whether the slot has been transferred once 
 
 ### 7.4 Relationship to the Wallet Document
 
-The wallet document says: "protocol_seq = N → slot at seq=N is live" (persistent, owner-written, monotonic). The proof says: "slot at seq=N legitimately holds X balance with valid witnessed history back to issuer genesis." Both are required — wallet document for liveness, proof for legitimacy.
+The wallet document is an append-only entry log where each entry represents exactly one `protocol_seq` increment. Status is inferred from the latest entry's `event_type` — no separate status key exists. The entry at `base + SEQ_STRIDE` with event type FINALIZED (or READY for recipient) indicates a live output slot. The ZK proof says: "slot at that seq legitimately holds X balance with valid witnessed history back to issuer genesis." Both are required — entry log for liveness and state, proof for legitimacy. Supplementary data (proofs, attestations, witness bundles) lives in content-addressed blobs referenced by CID from each entry.
 
 ### 7.5 Temporal Integrity
 
@@ -352,14 +384,25 @@ Consecutive fold proofs must advance at a real-time rate. A beacon recency chain
 
 ```
 MUST PERSIST (Network — Wallet Documents):
-  • protocol_seq, slot status, tx context
-  • Owner is sole writer; monotonicity prevents rollback
+  • Append-only entry log (one entry per phase transition)
+  • Each entry: protocol_seq, event_type, slot_commit, session_id,
+    beacon_round, phase_data_cid, previous_entry_hash
+  • Owner is sole writer; append-only hash chain prevents rollback
+  • protocol_seq == Iroh entry sequence number (by construction)
   • XOR-sharded subscriptions (k=50) provide replication
   • This is the ONLY thing that must persist network-wide
+
+MUST PERSIST (Network — Phase Blobs):
+  • Content-addressed blobs referenced by phase_data_cid
+  • Proofs, attestations, commitments, encrypted blinding factors
+  • GC-safe after fold (data is absorbed into collapsed proof)
+  • Redundancy, not authority — owner holds local copies
 
 MUST PERSIST (Locally by Owner):
   • Secret key (sk) — derives all slots, nullifiers
   • Current collapsed proof — ~560 bytes, self-authenticating
+  • Current IssuerEligibleHeader + own Merkle proof (if witness-eligible)
+    ~940 bytes, self-contained, refreshed per epoch
 
 REAL-TIME ONLY (During Active Transactions):
   • Nullifiers — race detection; GC-safe once oracle advances
@@ -384,13 +427,13 @@ Because the infrastructure DHT is peer-routing (not content-routing), Inat uses 
 
 ### 8.3 Propagation
 
-Three channels ensure state reaches all relevant parties:
+Three channels provide layered propagation for state that needs network-wide visibility:
 
 1. **Gossip broadcast** — fast (~1–5s), best-effort notification.
-2. **Doc sync push** (k=50) — reliable, after each witness event.
+2. **Doc sync push** (k=50) — per-wallet replication after each witness event.
 3. **Pulse anti-entropy** — heals gaps every 5 minutes via neighbor summary exchange.
 
-Witnesses fail closed on unreachable documents: if a wallet document cannot be fetched, attestation is rejected.
+The protocol does not depend on propagation succeeding. Witnesses fail closed: if a wallet document cannot be fetched, attestation is rejected. Partition tolerance is achieved by stalling transactions, not by proceeding with stale data. This is an explicit CP choice — under uncertainty, transactions fail, never approve.
 
 ---
 
@@ -404,13 +447,22 @@ All state transitions are witnessed — including recovery. Recovery from a stuc
 
 Recovery uses two phases with a cooling period to prevent race conditions across network partitions:
 
-**Phase A — Recovery Intent** (at 1-hour timeout): Owner publishes intent. W_RA witnesses (21/29) independently fetch slot state, verify it's still PENDING_SEND, verify no Phase 2 quorum exists, and attest. Sequence is NOT incremented.
+**Phase A — Recovery Intent** (at 1-hour timeout): Owner publishes intent. W_RA witnesses (21/29) independently fetch slot state, verify it's still PENDING_SEND, verify the nullifier hasn't been published, and attest. Sequence is NOT incremented.
 
 **Cooling Period** (10 minutes, 2× Pulse interval): Allows Pulse to propagate any Phase 2 quorum from the other side of a partition, or propagate the recovery intent to the recipient's side.
 
-**Phase B — Recovery Confirm** (after cooling): W_RB witnesses (21/29, fresh VRF selection) re-check that the slot is still PENDING_SEND and no Phase 2 quorum appeared during cooling. If confirmed, sequence increments, new slot created with identical balance, old slot transitions to RECOVERED (terminal).
+**Phase B — Recovery Confirm** (after cooling): W_RB witnesses (21/29, fresh VRF selection) re-check that the slot is still PENDING_SEND and the nullifier remains unpublished. If confirmed, three entries are written: R₁ investigation at `base+2`, R₂ confirmation at `base+3`, and RECOVERED output at `base+4` (= `base + SEQ_STRIDE`). The output slot materializes at the same seq as a normal transaction's output — whether normal completion or recovery, the output always lands at `base + SEQ_STRIDE`.
 
-**Reciprocal defense:** Phase 2 witnesses also check for recovery intent during their independent fetch. If recovery intent exists with valid attestations, Phase 2 is rejected. This creates mutual exclusion — at least one side sees the other's signal before completing.
+```
+Recovery entry sequence (abort from PENDING_SEND at base+1):
+
+  Entry            Seq      Content
+  R₁ investigation base+2   R₁ attestation CIDs
+  R₂ confirmation  base+3   R₂ attestation CIDs
+  RECOVERED output base+4   New slot, balance preserved
+```
+
+**Reciprocal defense:** If recovery completes before Phase 2, the slot reaches RECOVERED (terminal). Phase 2 witnesses independently fetch slot status and reject terminal states. If Phase 2 completes before recovery, the slot reaches COMMITTED — recovery witnesses reject COMMITTED slots. Oracle monotonicity provides mutual exclusion: one path must complete first, and the other's witnesses observe the resulting terminal state.
 
 Recovery is blocked from COMMITTED state onward. A COMMITTED transaction proceeds to finalization via the normal path, with a forced-finalization fallback at 72 hours if share collection fails.
 
@@ -438,11 +490,12 @@ The fold circuit verifies `issuer_pk ∈ issuer_registry_root` via Merkle proof,
 
 | Controls | Cannot Control |
 |----------|---------------|
-| Who is eligible to witness (append-only, irrevocable) | Which eligible witnesses are selected (VRF) |
+| Who receives new eligibility headers each epoch | Which eligible witnesses are selected (VRF) |
 | Minimum balance for witness eligibility | Transaction outcomes (ZK proofs) |
-| How many witness-eligible wallets per identity | Retroactive censorship of finalized proofs |
-| | Who transacts with whom |
-| | Removal of previously admitted witnesses |
+| Forward revocation (stop renewing headers) | Retroactive censorship of finalized proofs |
+| Supply cap enforcement (if configured at genesis) | Who transacts with whom |
+| | Reversal or confiscation of existing slots |
+| | In-flight transactions whose witnesses already have valid headers |
 
 The issuer is the bouncer for the witness pool, not for the venue.
 
@@ -450,7 +503,23 @@ The issuer is the bouncer for the witness pool, not for the venue.
 
 ## 11. Economics
 
-### 11.1 Fee Principle
+### 11.1 Supply Cap (Optional)
+
+An issuer can set `max_supply` in the AssetDefinition at asset creation. Because the AssetDefinition is content-addressed (its CID becomes part of `asset_id`), the supply cap is cryptographically bound to the asset's identity — changing the cap would change the CID and create a different asset entirely.
+
+When a cap is set, every mint requires a zero-knowledge `MintProof` that:
+
+- Chains from the previous mint accumulator root
+- Proves `cumulative_minted + this_mint ≤ max_supply`
+- Binds the genesis record to the proof
+
+Recipients verify the MintProof before countersigning the genesis record. Unverified or missing proofs mean no mint. Fold proofs chain back to genesis records that include valid MintProofs — so every slot's validity transitively depends on supply cap compliance.
+
+This enforcement is stronger than consensus-based caps: Bitcoin's 21M limit is enforced by node software (which could in principle be changed by consensus), while Inat's cap is enforced by BLAKE3 content-addressing (which cannot be changed without breaking the hash function).
+
+For uncapped assets (loyalty points, inflationary game currencies), MintProofs are optional and the traditional issuer-signed genesis path is used.
+
+### 11.2 Fee Principle
 
 All mandatory fees go 100% to attesting witnesses. There are no mandatory protocol fund allocations, no hardcoded system wallets, and no percentage-based creator or developer splits.
 
@@ -463,13 +532,13 @@ Donation:  input = amount + change + (22 × fee_share)
            Witnesses earn identically in both variants
 ```
 
-### 11.2 Deferred Mint
+### 11.3 Deferred Mint
 
 Fees are not "sent" to witnesses during the transaction. They are a proven gap in the balance equation — value deducted from the sender with no output slot. Witnesses collect later via a sweep circuit that proves their participation across multiple transactions and mints a new issuer-bound slot with the accumulated amount.
 
 Value is never created or destroyed. The fee is deducted from circulation, then re-enters when swept. SpendRecords are the proof that the debt exists. The sweep circuit is the proof that the debt is legitimately collected.
 
-### 11.3 Double-Sweep Prevention
+### 11.4 Double-Sweep Prevention
 
 Sweep uses two layers of double-claim prevention, mirroring the transfer double-spend architecture:
 
@@ -480,11 +549,11 @@ Sweep uses two layers of double-claim prevention, mirroring the transfer double-
 
 Sweep outputs are bound to the claimant's own wallet so the accumulator and the output live in the same document, preventing re-sweep attacks after ephemeral store garbage collection.
 
-### 11.4 Witness Sovereignty
+### 11.5 Witness Sovereignty
 
 Witnesses have full discretion over which issuers they validate. Each witness only earns fees denominated in issuers they chose to attest. Economically rational witnesses reject fees in worthless tokens — no protocol-level enforcement required.
 
-### 11.5 Optional Donation
+### 11.6 Optional Donation
 
 The donation system is voluntary, user-initiated, and has zero impact on protocol operation or witness compensation. It adds a guardian's public key as a 22nd entry in the witness root. The guardian collects via the same sweep circuit as witnesses, choosing the target wallet at sweep time. No hardcoded destination exists in the protocol.
 
@@ -509,6 +578,9 @@ If the guardian ignores donations in a particular issuer, they burn permanently.
 | Key compromise | Registry rotation; old keys can't sign new eligible roots post-rotation |
 | Beacon outage | Stalls new transactions; cannot corrupt in-flight state |
 | Double-sweep | Durable sweep accumulator + NullifierStore fast-path |
+| Issuer header revocation mid-transaction | In-flight headers captured in transaction state; forced finalization (72h) uses header valid at attestation time |
+| Lost header blob | N/A — headers are not published; owning wallet holds the only copy and absorbs it into the fold proof |
+| Stale key registry | Circuit enforces registry epoch recency; registries GC'd after bounded age |
 
 ### 12.2 Evidence Trust Separation
 
@@ -529,6 +601,22 @@ Colluding parties who grind the recipient's signature to steer shard selection f
 ### 12.4 Eclipse Attack Resistance
 
 Eclipse attacks face layered defenses: 50 XOR-sharded doc subscribers, witness doc sync push, Pulse anti-entropy every 5 minutes, gossip broadcast, and owner-only writes with ZK verification on use. A Sybil controlling subscriber nodes can only withhold data (liveness attack), not forge it (safety attack). Any single honest node in the shard can heal the rest.
+
+### 12.5 CAP Positioning
+
+Inat makes an explicit CP (consistency + partition tolerance) choice. Under partition, uncertainty, or insufficient witness availability, transactions **fail**. They never approve with weakened guarantees.
+
+| Scenario | Behavior |
+|---|---|
+| Wallet document unreachable | Witness attestation rejected → transaction stalls |
+| Insufficient witnesses respond | Transaction stalls, recovery available after timeout |
+| Beacon outage | New transactions stall; in-flight state preserved |
+| Network partition splits witnesses | Neither side can reach quorum → both stall |
+| Witness sees stale oracle state | ±1 sequence tolerance, otherwise rejected |
+
+Every stuck state (PENDING_SEND, PENDING_RECEIVE) has a witnessed recovery path (21/29 quorum, two phases, cooling period) that activates after timeout. The forced finalization fallback at 72 hours handles the COMMITTED-but-stuck case via a fresh witness quorum.
+
+The deliberate tradeoff: Inat prioritizes safety over liveness. Transactions may take longer during network stress. They will never forge, reverse, or double-spend under any network condition — including total partition, eclipse attack, or issuer misbehavior. Edge cases cause inconvenience; they never cause insecurity.
 
 ---
 
