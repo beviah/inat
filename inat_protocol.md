@@ -1152,10 +1152,10 @@ ECDH(payer_sk, recipient_pk) and ECDH(payer_sk, ephemeral_pk).
    Build Locked Funds Proof. Send to recipient via MessageTransport.
 3. Receive Spot Reveal. Decrypt per §18.5 to obtain recipient_slot_commit.
 
-**Discovery complete â†' proceed to Phase 1 (§20.1).**
+**Discovery complete → proceed to Phase 1 (§20.1).**
 
 **Phase 1 entry from discovery:** When Phase 1 is preceded by the
-discovery protocol, steps 1â€"2 (dual check and oracle increment) have
+discovery protocol, steps 1—2 (dual check and oracle increment) have
 already been performed during the Locked Funds Proof (§18.4). The
 slot is already PENDING_SEND at seq N+1. Phase 1 resumes at step 3
 (session setup) using the already-incremented new_seq. The Phase 1
@@ -1243,6 +1243,7 @@ tracks density within its own shard via signed heartbeats.
 
 Density is now per-asset per-shard. A node participating in 5 assets tracks density independently for each:
 
+```python
 @dataclass
 class ShardHeartbeat:
     node_pk: bytes              # 32
@@ -1267,6 +1268,7 @@ class ShardHeartbeat:
 #
 # VRF selection is verified inside ZK circuits (fold §33 constraint 6)
 # to prevent fake witness injection.
+```
 
 A node whitelisting 5 assets sends 5 heartbeats per interval (one per asset-shard it belongs to). At 60s intervals and ~150 bytes each, that's 750 bytes/min — negligible.
 
@@ -1304,6 +1306,20 @@ class AssetShardConsensus:
 
 Shard depth is a network consensus property. Nodes converge on
 the **median** of their neighborhood's depth recommendations.
+
+```python
+class AssetShardConsensus:
+    def __init__(self):
+        self._depths: Dict[bytes, DepthTracker] = {}  # asset_id → tracker
+    
+    def compute_consensus(self, asset_id: bytes) -> int:
+        tracker = self._depths.get(asset_id)
+        if not tracker or tracker.supporter_count < ASSET_MIN_SUPPORTERS:
+            raise AssetBelowThresholdError(asset_id, tracker.supporter_count)
+        return tracker.median_depth
+```
+
+Shard depth is a network consensus property.
 
 **Verification rule:** Witnesses MUST reject transaction intents
 where `|claimed_depth - consensus_depth| > 1`.
@@ -1414,6 +1430,7 @@ deterministic and verifiable from public data.
 Each phase derives its seed from the previous phase's entropy,
 causing transactions to hop to different shards.
 
+```python
 # Phase 1 — includes asset_id
 seed_1 = H(slot_commit || beacon_round || beacon_randomness || asset_id)
 
@@ -1422,6 +1439,7 @@ seed_23 = H(seed_1 || H(σ_r) || beacon_round_23 || beacon_randomness_23)
 
 # Phase 4
 seed_4 = H(seed_23 || spend_cid || beacon_round_4 || beacon_randomness_4)
+```
 
 **Beacon per phase:** Each phase fetches a fresh beacon round at
 broadcast time. beacon₁ is fetched during Phase 1 (§20.1 step 3).
@@ -1473,6 +1491,7 @@ indices are assigned deterministically:
 Background registration — NOT used for witness selection
 Used only for pre-transaction density estimation
 
+```python
 SHADOW_DHT_INTERVAL = 600  # Same as heartbeat
 
 async def publish_witness_availability(node_pk, asset_id, iroh_node):
@@ -1498,13 +1517,15 @@ async def estimate_asset_health(asset_id, iroh_node) -> int:
     # Scale by sampling ratio
     return len(providers) * estimated_scaling_factor(providers)
 
-The wallet uses this before attempting a transaction:
+#The wallet uses this before attempting a transaction:
 
 estimated = await estimate_asset_health(asset_id, iroh)
 if estimated < ASSET_MIN_SUPPORTERS:
     warn_user("This asset has insufficient network support")
     return
-Proceed with Phase 1
+
+#Proceed with Phase 1
+```
 
 ### 19.9 Issuer Eligible Header
 
@@ -1707,12 +1728,12 @@ requiring WITNESS_QUORUM attestations.
 ### 20.1 Phase 1: Sender Initiates (READY → PENDING_SEND)
 
 **Preconditions:**
-- Source slot status = READY (or PENDING_SEND if preceded by discovery â€" see §18.6)
-- Source slot balance â‰¥ amount + fee
+- Source slot status = READY (or PENDING_SEND if preceded by discovery — see §18.6)
+- Source slot balance ≥ amount + fee
 - Source slot asset_id matches intended transfer
 
 NOTE: When entered from discovery protocol (§18.6), the slot is
-already PENDING_SEND with seq incremented. Steps 1â€"2 are skipped;
+already PENDING_SEND with seq incremented. Steps 1—2 are skipped;
 execution begins at step 3. All subsequent steps are identical.
 
 **Steps:**
@@ -2267,7 +2288,7 @@ execution begins at step 3. All subsequent steps are identical.
             "Amount commitment mismatch"
 
 10d. **Extract lineage data.**
-    Read sender's slot lineage for CombinedWitness (Ï€â‚‚â‚ƒ constraint 13).
+    Read sender's slot lineage for CombinedWitness (π₂₃ constraint 13).
 
         slot_hex = sender_state.sender_commitment.slot_commit.hex()
         lineage_data = await sender_doc.get(
@@ -3907,8 +3928,6 @@ document (§45) can read the current sequence directly.
 | verify_not_spent | `current_seq > creation_seq` → definitely spent. `current_seq == creation_seq` → possibly unspent (verify proof). |
 
 
-```
-
 ## 27. Slot State Protocol
 
 ```python
@@ -4743,11 +4762,11 @@ class SweepPrivateInputs:
 
 ### Donation Circuit Variant
 
-"""
 Optional variant of π₁ and π₂₃ that adds pool_pk as 14th entry in
 witness_root. Sender pays 14 × fee_share instead of 13. Witnesses
 earn identically. User opts in via wallet UX.
 
+```
 PHASE 1 DONATION VARIANT (π₁_d):
   All standard π₁ constraints, plus:
   • witness_count = 14 (not 13)
@@ -4772,8 +4791,7 @@ CIRCUIT OVERHEAD:
   • ~200 additional constraints for pool_pk verification
   • ~1% circuit size increase
   • Zero overhead when standard circuit is used
-"""
-
+```
 
 ### CollapsedProof
 
@@ -5675,7 +5693,6 @@ being unreachable or in a terminal state → REJECT.
 |-------|------|-------------|
 | spend_cid | bytes | CID of SpendRecord |
 | nullifier_cid | bytes | CID of published nullifier |
-```
 
 
 ```python
@@ -6029,6 +6046,7 @@ RATIONALE:
 
 ### 47.2 Fee Schedule
 
+```python
 @dataclass
 class FeeSchedule:
     fee_share: int = 10                     # Per-witness share (base unit)
@@ -6057,10 +6075,11 @@ def calculate_sweep_fee(
     return (schedule.sweep_base_fee
             + schedule.sweep_per_input_fee * num_inputs
             + schedule.fee_share * WITNESS_QUORUM)
-
+```
 
 ### 47.3 Fee Lifecycle
 
+```
 Phase 1 (INITIATE):
   Standard circuit:
     Sender commits: amount + (WITNESS_QUORUM × fee_share)
@@ -6079,14 +6098,16 @@ Sweep (whenever):
   Witness/guardian proves: participation in N transactions
   Witness/guardian balance: 0 + (N × FEE_SHARE)
   Deferred mint: new slot created from proven gaps
+```
 
+```python
 @dataclass
 class FeeCommitment:
     """Commitment to fee amount (standard or donation variant)."""
     fee_commit: bytes           # Pedersen(N × FEE_SHARE, blinding)
     witness_count: int          # 13 (standard) or 14 (donation)
     # In ZK proof: input_commit = output_commit + change_commit + fee_commit
-
+```
 
 ### 47.5.1 Sweep Triggers
 
@@ -6098,6 +6119,7 @@ class FeeCommitment:
 
 ### 47.5.2 Sweep Procedure
 
+```python
 async def execute_sweep(
     claimant_sk: bytes,
     spend_record_cids: List[bytes],
@@ -6350,7 +6372,7 @@ async def execute_sweep(
         sweep_cid=sweep_cid,
         swept_count=len(validated_cids),
     )
-    
+```
 
 ## Sweep Leaf Derivation
 
@@ -6705,6 +6727,7 @@ deferred mints collected via the unified sweep circuit (§47.5).
 
 ### 48.2 Node Startup: InatNode.start()
 
+```python
 async def start_inat_node(secret_key: bytes):
     """
     Minimal startup. No registration. No stake. No credits.
@@ -6714,13 +6737,14 @@ async def start_inat_node(secret_key: bytes):
     node = InatNode(secret_key, iroh)
     await node.start()
     return node
-
+```
 
 ### 48.3 Witness Sovereignty
 
 Witnesses have full discretion over which issuers they validate.
 Each witness only earns fees denominated in issuers they chose to attest.
 
+```python
 class WitnessAdmissionPolicy:
     """
     Each witness defines their own issuer acceptance policy.
@@ -6730,12 +6754,13 @@ class WitnessAdmissionPolicy:
 
     def __init__(self, config: 'WitnessConfig'):
         self.accepted_issuers: Set[bytes] = set()
-
+```
 
 ### 48.4 Slashing
 
 Without stake, consequences are soft but economically effective.
 
+```python
 class ViolationType(Enum):
     DOUBLE_SPEND_ATTESTATION = "double_spend"
     INVALID_PROOF_ATTESTATION = "invalid_proof"
@@ -6769,10 +6794,10 @@ class SlashingRecord:
 
     def verify(self) -> bool:
         return verify_equivocation(self.evidence)
+```
 
 Equivocation: same witness signs attestations for different
 sessions → SlashingEvidence propagated via gossip
-
 
 ## 49. DATA STRUCTURES
 
@@ -6823,7 +6848,7 @@ def enum_encoder(obj):
 
 ### 49.2 Commitment Structures
 
-
+```python
 @dataclass
 class SenderCommitment:
     """What sender commits to in Phase 1. Signed AFTER witness collection
@@ -6871,9 +6896,11 @@ class RecipientCommitment:
     @classmethod
     def deserialize(cls, data: bytes) -> 'RecipientCommitment':
         return cls(**msgpack.unpackb(data))
+```
 
 ### 49.3 Spend Record
 
+```python
 @dataclass
 class SpendRecord:
     """Finalized transaction record. Input to fold circuit (Phase 4). 
@@ -6990,8 +7017,6 @@ class SpendRecordLite:
     @classmethod
     def deserialize(cls, data: bytes) -> 'SpendRecordLite':
         return cls(**msgpack.unpackb(data))
-
-
 
 SlotState composes a public Slot with transaction-phase-specific
 fields. The Slot captures intrinsic identity (persists across
@@ -7122,10 +7147,11 @@ class TransactionStateRecord:
         if d.get('recipient_commitment'):
             d['recipient_commitment'] = RecipientCommitment.deserialize(d['recipient_commitment'])
         return cls(**d)
-
+```
 
 ### 49.5 Attestation Structures
 
+```python
 @dataclass
 class Attestation:
     session_id: bytes
@@ -7363,9 +7389,11 @@ class BurnRecord:
         d = msgpack.unpackb(data)
         d['burn_type'] = BurnType(d['burn_type'])
         return cls(**d)
+```
 
 ### 49.7 Sweep Structures
 
+```python
 @dataclass
 class SweepAttestation:
     """Reference to a single fee claim (witness or guardian)."""
@@ -7392,6 +7420,7 @@ class SweepRecord:
     attestation_cids_root: bytes    # H(all claimed spend_record_cids)
     issuer_family_id: bytes         # Per-issuer sweep
     timestamp: int
+```
 
 Sweep produces an OwnedSlot (the claimant knows their own sk).
 The public Slot projection is written to Iroh via .to_public().
@@ -7401,6 +7430,7 @@ No separate SweepLineage type is needed.
 
 ### 49.8 Message Structures
 
+```python
 @dataclass
 class TransactionInvite:
     session_id: bytes
@@ -7427,6 +7457,7 @@ class MintInvite:
     issuer_doc_id: str
     asset_id: bytes
     amount: int
+```
 
 ### 49.9 Issuer Eligibility Structures
 
@@ -7679,6 +7710,7 @@ class RegistryAnnouncement:
 
 ### 49.10 Donation Structures
 
+```python
 @dataclass
 class DonationReceiptStore:
     """
@@ -7706,6 +7738,7 @@ class DonationReceiptStore:
                 r for r in self.receipts[inbox_key]
                 if r.spend_record_cid not in swept_cids
             ]
+```
 
 ---
 
