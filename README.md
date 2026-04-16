@@ -4,11 +4,7 @@
 
 ## Status
 
-Implementation is in final stages. 
-
-You can read high level [whitepaper](https://github.com/beviah/inat/blob/main/inat-whitepaper.md). 
-
-You can read detailed specification [specification](https://github.com/beviah/inat/blob/main/inat_protocol.md). 
+[Fractal overviews](https://github.com/beviah/inat/blob/main/overviews.md) | [Whitepaper](https://github.com/beviah/inat/blob/main/inat-whitepaper.md) | [Specification](https://github.com/beviah/inat/blob/main/inat_protocol.md) | Implementation is in final stages. 
 
 ## License
 
