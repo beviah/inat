@@ -8,6 +8,8 @@ Double-spend is deterministically impossible during live validation and probabil
 
 The protocol doesn't have a throughput problem. It has a demand problem. 
 
+Failures are isolated to individual transaction graphs; there is no shared global state that can halt the network. Liveness is local and retry-based; safety is global and absolute.
+
 Fiat-backed issuance is structurally supported but out of scope: any licensed entity (EMI, MSB, or equivalent) may serve as issuer, performing KYC at mint and redeem while the protocol's ZK layer preserves in-flight privacy — compliance architecture, licensing, and gate-level controls are the issuer's responsibility, not a protocol concern.
 
 Inat tokens are closed-loop instruments with no fiat redemption promise. If secondary markets emerge for fiat conversion, the exchange operators — not the issuer or the protocol — bear the regulatory burden. This follows the established pattern of virtual currency secondary markets (game gold, digital goods).
@@ -995,12 +997,12 @@ SHARE LIFECYCLE:
 # π₁ (sender proof) — verified by W₁ and recipient
 async def verify_sender_proof(proof, public_inputs_bytes) -> bool:
     public_inputs = SenderPublicInputs.deserialize(public_inputs_bytes)
-    return groth16_verify(VERIFICATION_KEYS["sender"], proof, public_inputs.serialize())
+    return plonk_verify(VERIFICATION_KEYS["sender"], proof, public_inputs.serialize())
 
 # π₂₃ (combined proof) — verified by W₂₃ and anyone auditing
 async def verify_combined_proof(proof, public_inputs_bytes) -> bool:
     public_inputs = CombinedPublicInputs.deserialize(public_inputs_bytes)
-    return groth16_verify(VERIFICATION_KEYS["combined"], proof, public_inputs.serialize())
+    return plonk_verify(VERIFICATION_KEYS["combined"], proof, public_inputs.serialize())
 ```
 
 # Part V: Transaction Protocol
@@ -1042,7 +1044,7 @@ The signature proves the token creator controls recipient_pk.
 Recipient proves they CAN receive without revealing which slot
 or how much they hold.
 
-**ZK proof (Groth16, ~192 bytes, ~3ms verify):**
+**ZK proof (PLONK on BN254, ~2.5KB, ~5ms verify):**
 
 Public inputs:
 
@@ -4932,12 +4934,12 @@ Phase circuits: PLONK (BN254), ~2.5KB each, ~5ms verification.
 Universal trusted setup: powers-of-tau only. No per-circuit ceremony.
 Fold: attested hash-chain (~364 bytes, <1ms verification).
 
-Constraint counts (Groth16 circuits):
+Constraint counts (PLONK circuits):
 sender: ~55k (includes tier range proof), combined: ~65k (signatures witness-verified, not circuit-proven),
 sweep: ~200k (variable), recovery: ~120k, capacity: ~15k,
 donation_sender: ~56k, donation_combined: ~66k (signatures witness-verified).
 Fold (v1): no circuit (attested hash-chain, <1ms verification).
-Fold (v2, not planned): ~200k constraints (includes eligibility Merkle proofs + issuer sig).
+Fold (v2, not planned): ~200k PLONK constraints (includes eligibility Merkle proofs + issuer sig).
 
 VERIFICATION_KEYS / PROVING_KEYS exist for:
   sender, combined, sweep, recovery, capacity,
