@@ -39,6 +39,7 @@ sk, proof (local)  ↔ wallet doc (oracle)    ↔ attest via QUIC
 - Witnesses fetch mutable state **independently** — they never trust requester-supplied slot status.
 - ZK proofs are **self-authenticating** — source doesn't matter, math verifies.
 - Issuers gate **witness eligibility** (who can attest); they cannot gate **transacting** (who can send/receive).
+- Failures are **local, not systemic** — a stalled transaction affects only its own graph; no shared global state can halt the network. Liveness is local and retry-based; safety is global and absolute.
 
 ---
 
@@ -95,7 +96,7 @@ Recovery path: Two-phase witnessed abort (R₁ then R₂, different shards) from
 Asset-scoped gossip shard (~1000 Inat nodes)
   │
   ├─ Shard depth adapts per asset: split at 2400 nodes, merge at 600
-  ├─ VRF threshold: (TARGET_WITNESSES / SHARD_TARGET_SIZE) × 2²⁵⁶ [constant]
+  ├─ VRF threshold: (WITNESS_TOTAL / SHARD_TARGET_SIZE) × 2²⁵⁶ [constant]
   ├─ Distance-weighted scoring: far nodes pass threshold more easily
   │    adjusted_T = VRF_THRESHOLD × min(xor_dist(node, anchor), MAX_BOOST)
   └─ Two-round engagement:
@@ -398,7 +399,7 @@ Donation:  total_fee = 22 × fee_share  (21 witnesses + 1 ghost pool_pk)
 | Item | Size | Time |
 |------|------|------|
 | Collapsed fold proof | ~560 bytes | <1ms verify |
-| Phase proof element (PLONK) | ~2.5 KB | 5ms verify |
+| Phase proof element (Groth16) | ~192 bytes | 5ms verify |
 | SpendRecord | ~5 KB | — |
 | Witness bundle (21) | ~3.5 KB | — |
 | Nullifier | 32 bytes | — |
