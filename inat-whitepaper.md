@@ -285,7 +285,7 @@ seed₄  = H(seed₂₃      ‖ spend_cid ‖ beacon₄    ‖ randomness₄)
 
 The fold circuit enforces shard membership — each witness's NodeID must have the correct prefix for the shard derived from that phase's seed. A Sybil with a valid VRF proof but wrong shard prefix cannot appear in a valid fold proof.
 
-At 100M nodes (~131,072 shards), an attacker controlling 10% of the network faces P(attack) ≈ 10⁻²⁷ per transaction — must control 21/29 in three independent shards.
+At 100M nodes (~131,072 shards), an attacker controlling 10% of eligible witnesses — distributed by their own choice across shards — faces a per-transaction attack probability below 10⁻¹⁰ under adversarial (non-uniform) concentration, because the three required shards are determined by phase seeds that cannot be predicted before the prior phase's attestations exist. Uniform-distribution analysis yields far smaller numbers (~10⁻²⁷), but the protocol does not rely on uniform assumptions; it relies on the target shards being determined after Sybil pre-placement is fixed.
 
 ### 5.5 Issuer-Gated Eligibility
 
@@ -596,13 +596,38 @@ Witnesses never trust requester-supplied values for mutable state. If a wallet d
 
 Even if sender and recipient collude, witness selection remains unpredictable. A colluding requester cannot fabricate slot state because witnesses fetch independently and only the wallet owner can write to their document.
 
-Colluding parties who grind the recipient's signature to steer shard selection face two barriers: the fold circuit enforces shard prefix membership (costing O(2^depth) key-grinds per Sybil), and cross-phase depth consistency requires Sybil coverage across three independent shards. At depth=17, placing 1000 Sybils in three shards costs ~400M keypair grinds — and the target shards shift with each beacon round.
+Colluding parties who grind the recipient's signature to steer shard selection face two barriers: the fold circuit enforces shard prefix membership (costing O(2^depth) key-grinds per Sybil), and cross-phase depth consistency requires Sybil coverage across three independent shards.
+
+**Non-uniform Sybil distribution:** The uniform-distribution analysis
+(1000 Sybils × three shards × ~131K shard options ≈ 400M grinds at
+depth=17) is a lower bound assuming attackers spread resources evenly.
+An attacker who concentrates Sybils in a few target shards reduces
+grinding cost but raises local detection probability (heartbeat
+anomalies, witness pk clustering in sweep evidence, issuer admission
+patterns). The protocol does not claim uniform-distribution security;
+it claims that (a) concentration is detectable at the issuer admission
+layer (who sees all eligibility requests), and (b) distributed attacks
+are expensive at scale. Issuer admission policy is the primary Sybil
+defense; VRF + shard hopping + fold constraints are the secondary
+defense assuming some Sybil admission occurs.
+
+The adversary model the protocol defends against is: an attacker with
+fraction f of issuer-eligible witnesses, distributed arbitrarily across
+shards, with beacon-bounded (≈30s) grinding windows per phase. At
+f = 0.1 and depth = 17, worst-case per-transaction attack probability
+remains below 10⁻¹⁰ even under adversarial concentration, because
+capturing 21-of-29 in three sequentially-derived shards within one
+beacon window requires pre-placement in the exact shard prefixes that
+seed₁, seed₂₃, and seed₄ will derive — which are unpredictable before
+σ_r is signed (for seed₂₃) and before spend_cid is finalized (for seed₄).
 
 ### 12.4 Eclipse Attack Resistance
 
 Eclipse attacks face layered defenses: 50 XOR-sharded doc subscribers, witness doc sync push, Pulse anti-entropy every 5 minutes, gossip broadcast, and owner-only writes with ZK verification on use. A Sybil controlling subscriber nodes can only withhold data (liveness attack), not forge it (safety attack). Any single honest node in the shard can heal the rest.
 
 ### 12.5 CAP Positioning
+
+Failures are isolated to individual transaction graphs; there is no shared global state that can halt the network. Liveness is local and retry-based; safety is global and absolute. This inverts the blockchain model, where both liveness and safety are global: Inat can stall a transaction without stalling the network, because the network has no shared state to stall.
 
 Inat makes an explicit CP (consistency + partition tolerance) choice. Under partition, uncertainty, or insufficient witness availability, transactions **fail**. They never approve with weakened guarantees.
 
@@ -681,10 +706,14 @@ Inat differs from existing systems at a structural level:
 
 Inat demonstrates that trustless value transfer does not require a shared ledger. By combining a persistent wallet-level oracle, recursive ZK proof folding, threshold cryptography, and VRF-selected distributed witnesses, the protocol achieves transaction finality that is mathematically non-constructible to contradict — in ~30 seconds, at ~560 bytes, with <1ms verification, regardless of transaction history depth.
 
-The protocol's scalability is horizontal: each transaction touches ~1000 nodes regardless of network size. Its privacy is structural: information scarcity, not obfuscation. Its economics are aligned: witnesses earn fees for computational work, not rent extraction.
+The protocol's scalability is horizontal: each transaction touches ~1000 nodes regardless of network size. Its privacy is structural: information scarcity, not obfuscation. Its economics are aligned: witnesses earn fees for computational work, not rent extraction. Its failures are isolated: a stall affects the transaction graph in question, never the network — because there is no shared global state to halt.
 
 Inat is not a blockchain without a chain. It is a fundamentally different architecture for value transfer — one where finality is a property of mathematics, not a product of agreement.
 
 ---
 
 *For implementation details, circuit specifications, and normative definitions, see the Inat Protocol Specification and Quick Reference.*
+
+---
+
+License: Apache2.0
