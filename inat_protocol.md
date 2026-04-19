@@ -38,7 +38,7 @@ Inat tokens are closed-loop instruments with no fiat redemption promise. If seco
 | Fixed witness count | All transactions use WITNESS_TOTAL=29 witnesses, WITNESS_QUORUM=21 threshold. Shard sizing derived from these constants: SHARD_MIN_DENSITY = ceil(WITNESS_QUORUM × SHARD_TARGET_SIZE / WITNESS_TOTAL) = 750. |
 | Temporal integrity | Beacon recency chain — consecutive fold proofs must advance at real-time rate |
 | Symmetric participation | All funded, issuer-approved wallets are VRF-eligible — witnessing incentivized via fee shares |
-| O(1) verification | Proof folding (~22KB, ~200ms). Bilateral signatures (σ_s, σ_r) verified natively from fold data — not inside ZK circuits (avoids ~400k non-native BN254↔Curve25519 constraints) |
+| O(1) verification | Proof folding (~1KB, <1ms). Bilateral signatures (σ_s, σ_r) verified natively from fold data — not inside ZK circuits (avoids ~400k non-native BN254↔Curve25519 constraints) |
 | Per-phase seq stride | SEQ_STRIDE=4: one doc entry per phase transition per party. Output at base+4, forward at base+8. protocol_seq = Iroh entry seq (by construction). Entry model: one doc.set() per phase, supplementary data in blobs via CID. |
 | Data availability | 7 Tit-for-Tat confirmations |
 | No Global State | Need-to-know state distribution |
@@ -112,7 +112,7 @@ Inat tokens are closed-loop instruments with no fiat redemption promise. If seco
 - **Symmetric Privacy**: Both sender and recipient have identical privacy guarantees via private-key-derived identifiers and session randomness.
 - **Need-to-Know State**: No global transaction broadcast. State shared only with participants. Only nullifiers published globally.
 - **Counterparty Verification**: Parties verify intended counterparty via ECDH-derived session-bound commitments. Witnesses verify pairing without learning identities.
-- **Minimal Trust**: No single trusted party. Distributed 13-of-19 witness quorum via VRF random selection with economic incentives.
+- **Minimal Trust**: No single trusted party. Distributed 21-of-29 witness quorum via VRF random selection with economic incentives.
 - **Identity vs Value Separation**: Identity layer (keys, sequences, ownership) is orthogonal to value layer (slots, balances, assets, lineage).
 - **Gossip-ZK Parity**: Every gossip-level routing constraint (shard membership, witness selection) is also enforced at the ZK circuit level (§33 constraint 6). No security property relies solely on network-layer behavior.
 - **Issuer-Gated, Decentralized-Executed**: Identity admission is permissioned (issuer gates VRF eligibility). Transaction execution is fully decentralized (p2p gossip, VRF witness selection, ZK proofs). The issuer is the bouncer, not the bartender. The issuer cannot retroactively censor finalized fold proofs. Asset identity is derived from `asset_genesis_cid` (immutable), not from the issuer's signing key — key rotation updates the AssetKeyRegistry without affecting token identity or requiring migration.
@@ -329,9 +329,8 @@ def ecdh(my_ed_sk: bytes, their_ed_pk: bytes, context: bytes = b"") -> bytes:
 ## 8. Zero-Knowledge Proof System
 
 ```python
-# PLONK on BN254
-# Universal trusted setup: Powers-of-tau (Phase 1) only.
-# No per-circuit Phase 2 ceremony. Deterministic from ptau + R1CS.
+# Groth16 on BN254
+# Per-circuit trusted setup: Phase 1 (powers-of-tau) + Phase 2 (per-circuit MPC).
 #
 # Sub-proof layer: Sigma protocols (Schnorr proofs, Bulletproofs range
 # proofs) operate as standalone sub-proofs for balance conservation
@@ -340,15 +339,15 @@ def ecdh(my_ed_sk: bytes, their_ed_pk: bytes, context: bytes = b"") -> bytes:
 π = Prove(proving_key, public_inputs, private_witness)
 valid = Verify(verification_key, public_inputs, π)
 # Verification: O(1), ~5ms per proof
-# Proof size: ~2.5KB (PLONK on BN254)
+# Proof size: ~192 bytes (Groth16 on BN254)
 ```
 
 
-### 8.1 Trusted Setup (PLONK — Universal, No Ceremony)
+### 8.1 Trusted Setup (Groth16 — Per-Circuit Ceremony)
 
-PLONK uses a universal trusted setup. Only Phase 1 (powers-of-tau)
-is required. There is NO per-circuit Phase 2 ceremony and NO
-circuit-specific toxic waste.
+Groth16 uses a per-circuit trusted setup. Phase 1 (powers-of-tau)
+is universal and shared; Phase 2 is per-circuit and produces
+circuit-specific proving and verification keys.
 
 **Phase 1 (powers-of-tau, universal, one-time):**
 Downloaded from Hermez ceremony (54 contributors, audited).
@@ -357,11 +356,15 @@ Security: requires at least ONE honest contributor.
 **SRS sizing:** 2^18 (262,144) constraints. Covers largest circuit
 (SWEEP at ~200k constraints) with headroom.
 
-**Key generation (deterministic, per circuit):**
-Given Phase 1 ptau + circuit R1CS, PLONK setup produces proving
-key and verification key deterministically. No MPC. No ceremony.
-Adding new circuits requires only rerunning `snarkjs plonk setup`
-against the existing ptau.
+**Phase 2 (per-circuit, requires MPC):**
+Given Phase 1 ptau + circuit R1CS, run `snarkjs groth16 setup` then
+contribute randomness via `snarkjs zkey contribute`. Multiple
+independent contributors should participate; security requires at
+least ONE honest contributor per circuit. Toxic waste from each
+contribution must be discarded.
+
+Adding new circuits or modifying existing R1CS requires rerunning
+the Phase 2 ceremony for that circuit.
 
 **Verification keys** are embedded in the protocol as constants.
 **Proving keys** are distributed to provers.
@@ -370,18 +373,19 @@ against the existing ptau.
 
 | Circuit | Constraints | Setup |
 |---------|------------|-------|
-| SENDER (π₁) | ~50k | PLONK from universal ptau |
-| COMBINED (π₂₃) | ~65k | PLONK from universal ptau |
-| SWEEP (π_sweep) | ~200k (variable) | PLONK from universal ptau |
-| RECOVERY | ~120k | PLONK from universal ptau |
-| CAPACITY | ~15k | PLONK from universal ptau |
-| DONATION_SENDER (π₁_d) | ~51k | PLONK from universal ptau |
-| DONATION_COMBINED (π₂₃_d) | ~66k | PLONK from universal ptau |
+| SENDER (π₁) | ~50k | Groth16 Phase 2 from universal ptau |
+| COMBINED (π₂₃) | ~65k | Groth16 Phase 2 from universal ptau |
+| SWEEP (π_sweep) | ~200k (variable) | Groth16 Phase 2 from universal ptau |
+| RECOVERY | ~120k | Groth16 Phase 2 from universal ptau |
+| CAPACITY | ~15k | Groth16 Phase 2 from universal ptau |
+| DONATION_SENDER (π₁_d) | ~51k | Groth16 Phase 2 from universal ptau |
+| DONATION_COMBINED (π₂₃_d) | ~66k | Groth16 Phase 2 from universal ptau |
 | FOLD | N/A (attested hash-chain, signature-based; +~21K constraints for registry proof in future SNARK variant) | No setup required |
-| WITNESS_ELIGIBILITY | ~100k (Merkle proofs + issuer sig per witness) | PLONK from universal ptau |
+| WITNESS_ELIGIBILITY | ~100k (Merkle proofs + issuer sig per witness) | Groth16 Phase 2 from universal ptau |
 
-**Implementation:** circom + snarkjs (PLONK backend). Native bridge
-via rapidsnark for production proving performance.
+**Implementation:** circom + native Rust bridge (ark-circom + PyO3)
+for production proving performance. snarkjs CLI used for trusted
+setup ceremony only.
 
 ---
 
@@ -982,13 +986,13 @@ SPENT (nullifier on Iroh-blob)
 FINALIZED (O(1) proof)
 
 WITNESS SETS (rotated per phase, sized by tx tier §19.11):
-  W₁ (Phase 1): Holds encrypted shares. Size = tier.witness_total.
-  W₂₃ (Phase 2): Attests bilateral binding. Size = tier.witness_total.
+  W₁ (Phase 1): Holds encrypted shares. Size = WITNESS_TOTAL (29).
+  W₂₃ (Phase 2): Attests bilateral binding. Size = WITNESS_TOTAL (29).
   W₄  (Phase 4): DA confirmation (7 validators)
   All witnesses must be in current IssuerEligibleRoot (§19.9).
 
 SHARE LIFECYCLE:
-  Phase 1: Sender splits nullifier → 19 shares, encrypts to W₁
+  Phase 1: Sender splits nullifier → 29 shares, encrypts to W₁
   Phase 2: W₂₃ quorum → point of no return
   Phase 3: W₁ sees W₂₃ quorum → release shares → reconstruct nullifier
 ```
@@ -997,12 +1001,12 @@ SHARE LIFECYCLE:
 # π₁ (sender proof) — verified by W₁ and recipient
 async def verify_sender_proof(proof, public_inputs_bytes) -> bool:
     public_inputs = SenderPublicInputs.deserialize(public_inputs_bytes)
-    return plonk_verify(VERIFICATION_KEYS["sender"], proof, public_inputs.serialize())
+    return groth16_verify(VERIFICATION_KEYS["sender"], proof, public_inputs.serialize())
 
 # π₂₃ (combined proof) — verified by W₂₃ and anyone auditing
 async def verify_combined_proof(proof, public_inputs_bytes) -> bool:
     public_inputs = CombinedPublicInputs.deserialize(public_inputs_bytes)
-    return plonk_verify(VERIFICATION_KEYS["combined"], proof, public_inputs.serialize())
+    return groth16_verify(VERIFICATION_KEYS["combined"], proof, public_inputs.serialize())
 ```
 
 # Part V: Transaction Protocol
@@ -1044,7 +1048,7 @@ The signature proves the token creator controls recipient_pk.
 Recipient proves they CAN receive without revealing which slot
 or how much they hold.
 
-**ZK proof (PLONK on BN254, ~2.5KB, ~5ms verify):**
+**ZK proof (Groth16 on BN254, ~192 bytes, ~5ms verify):**
 
 Public inputs:
 
@@ -1208,8 +1212,8 @@ Inat nodes. The shard is derived deterministically from the phase seed.
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| SHARD_TARGET_SIZE | 1000 | Target Inat nodes per shard. At this density, expected VRF self-selections = WITNESS_TOTAL = 29. |
-| SHARD_MIN_DENSITY | 750 | Minimum safe shard population. Derived: ceil(WITNESS_QUORUM × SHARD_TARGET_SIZE / WITNESS_TOTAL) = 725, +25 margin = 750. Below this, expected self-selections approach WITNESS_QUORUM. Depth hysteresis merges shards before this is reached. |
+| SHARD_TARGET_SIZE | 1000 | Target Inat nodes per shard. E[invites at TARGET] = 45; μ−2σ ≈ 32. |
+| SHARD_MIN_DENSITY | 700 | Minimum safe shard population. E[invites] ≈ 31.5; μ−2σ ≈ 21 = WITNESS_QUORUM. Merge triggers before this. |
 | SHARD_MAX_DENSITY | 2000 | Split threshold |
 | SHARD_MIN_DEPTH | 4 | Minimum prefix bits |
 | SHARD_MAX_DEPTH | 24 | Maximum prefix bits |
@@ -1260,10 +1264,10 @@ class ShardHeartbeat:
 # Threshold is a hardcoded protocol constant:
 #   VRF_THRESHOLD = (WITNESS_TOTAL / SHARD_TARGET_SIZE) × 2^256
 #
-# Expected self-selections = actual_shard_population × (WITNESS_TOTAL / SHARD_TARGET_SIZE)
-# SHARD_MIN_DENSITY is derived to keep expected self-selections > WITNESS_QUORUM:
-#   SHARD_MIN_DENSITY = ceil(WITNESS_QUORUM × SHARD_TARGET_SIZE / WITNESS_TOTAL) + margin
-#                     = ceil(21 × 1000 / 29) + 26 = 750
+# Expected invite-eligible = actual_shard_population × (VRF_TARGET_INVITES / SHARD_TARGET_SIZE)
+# At SHARD_TARGET_SIZE = 1000, E[invites] = 45.
+# At SHARD_MIN_DENSITY = 700, E[invites] ≈ 31.5, μ−2σ ≈ 21 = WITNESS_QUORUM.
+# SHARD_MERGE_THRESHOLD triggers before this lower bound is reached.
 # Shard depth adaptation maintains population ≥ SHARD_MIN_DENSITY.
 # No density measurement enters threshold computation.
 # Heartbeats are used ONLY for shard depth consensus (§19.2).
@@ -1272,19 +1276,25 @@ class ShardHeartbeat:
 # to prevent fake witness injection.
 ```
 
-A node whitelisting 5 assets sends 5 heartbeats per interval (one per asset-shard it belongs to). At 60s intervals and ~150 bytes each, that's 750 bytes/min — negligible.
+A node whitelisting 5 assets sends 5 heartbeats per interval (one per asset-shard it belongs to). At 60s intervals and ~150 bytes each, that's 750 bytes/min originated per node. Accounting for gossip amplification (each heartbeat fans out to GOSSIP_FAN_OUT=8 peers with TTL=6), per-node heartbeat-related traffic is higher but bounded by shard membership — a node only forwards heartbeats for shards it belongs to. Practical observed rate: ~50 KB/min per node per asset at TARGET density. Still negligible against transaction traffic.
 
 #### 19.2.1 — Depth Hysteresis
 
 ```python
 SHARD_SPLIT_THRESHOLD = 1.2 * SHARD_MAX_DENSITY    # 2400
-SHARD_MERGE_THRESHOLD = 0.8 * SHARD_MIN_DENSITY     # 600
-# NOTE: SHARD_MIN_DENSITY = 750 is derived, not arbitrary:
-#   floor = ceil(WITNESS_QUORUM × SHARD_TARGET_SIZE / WITNESS_TOTAL) = 724
-#   At SHARD_MIN_DENSITY the expected self-selections =
-#   750 × (29/1000) = 21.75 — just above WITNESS_QUORUM = 21.
-#   MERGE_THRESHOLD = 600 → expected = 17.4 → triggers merge before
-#   quorum becomes unreachable.
+SHARD_MERGE_THRESHOLD = 1.1 * SHARD_MIN_DENSITY     # 770
+# MERGE fires while μ−2σ is still above WITNESS_QUORUM.
+# At density 770, E[invites] ≈ 34.7, μ−2σ ≈ 23.
+# NOTE: SHARD_MIN_DENSITY = 1100 is chosen to keep μ−2σ above
+# WITNESS_QUORUM with high probability:
+#   At density 1100, E[selected] = 1100 × (29/1400) ≈ 22.8
+#   σ = √(22.8 × (1 − 29/1400)) ≈ 4.7
+#   μ − 2σ ≈ 13.4  ← below quorum, hence merge threshold at 935
+#   At SHARD_TARGET_SIZE = 1400, E[selected] ≈ 29, μ−2σ ≈ 19.7.
+# Merge threshold 935 → E[selected] ≈ 19.4; depth hysteresis triggers
+# merge before quorum failure rate becomes operationally visible.
+# Actual operating density should be closer to TARGET, with MIN as
+# a lower bound before merge fires.
 DEPTH_CHANGE_COOLDOWN = 600                          # 10 minutes
 ```
 
@@ -1480,13 +1490,14 @@ Witnesses do not have pre-assigned indices. After collection,
 indices are assigned deterministically:
 
     sorted = sort witnesses by vrf_output ascending
-    capped = sorted[:WITNESS_TOTAL_CAP]
+    capped = sorted[:WITNESS_TOTAL]
     index(witness) = position_in_capped + 1
 
 | Parameter | Value |
 |-----------|-------|
-| WITNESS_TOTAL_CAP | Tier-dependent (13–49, default 29) |
-| WITNESS_QUORUM | Tier-dependent (9–33, default 21) |
+| WITNESS_TOTAL | 29 (fixed) |
+| WITNESS_QUORUM | 21 (fixed) |
+| VRF_TARGET_INVITES | 45 (oversample for variance absorption) |
 
 ### 19.8 Shadow DHT Health Map
 
@@ -2001,7 +2012,7 @@ execution begins at step 3. All subsequent steps are identical.
 
 18. **Deliver payload to selected witnesses.**
     Send full IntentPayload individually to each selected witness
-    via their reply_path. Only these ~19 nodes learn oracle_key,
+    via their reply_path. Only these ~29 nodes learn oracle_key,
     asset_id, proof, poly_commits, and public_inputs.
 
         payload = IntentPayload(
@@ -2159,12 +2170,12 @@ execution begins at step 3. All subsequent steps are identical.
 **Post-conditions:**
 - Source slot status = PENDING_SEND
 - Oracle seq = previous + 1
-- ~19 VRF-selected witnesses received IntentPayload and attested (Round 2)
+- ~29 VRF-selected witnesses received IntentPayload and attested (Round 2)
 - W₁ witnesses hold encrypted shares (delivered individually, step 20)
 - σ_s and finalized SenderCommitment (with witness_tpk) are in wallet document
 - Encrypted amount_blinding available in wallet document for recipient
 - Recipient has TransactionInvite with read ticket
-- ~981 remaining shard nodes saw only IntentEnvelope (no identity/asset data)
+- ~971 remaining shard nodes saw only IntentEnvelope (no identity/asset data)
 
 **Failure modes:**
 
@@ -3076,8 +3087,8 @@ Upon receiving an IntentPayload via reply_path:
 7. **Verification pipeline**: Execute full checks in §21.2 using payload fields.
 8. **Reply with attestation**: Send WitnessResponse to sender's reply_path.
 
-**Privacy property:** Only ~19 VRF-selected witnesses receive the
-IntentPayload. The remaining ~981 shard nodes see only the
+**Privacy property:** Only ~29 VRF-selected witnesses receive the
+IntentPayload. The remaining ~971 shard nodes see only the
 IntentEnvelope, which contains no identity, asset, or proof data.
 
 
@@ -3621,7 +3632,7 @@ issuer-initiated recall. Both require witness attestation (21/29).
            owner_sk=owner_sk,
            wallet_doc=wallet_doc)
 
-3. **Fresh VRF witness selection** (19 witnesses, 21/29 quorum).
+3. **Fresh VRF witness selection** (29 witnesses, 21/29 quorum).
    Seed: `H(slot_commit || beacon_round || beacon_randomness)`.
 
 4. **Each burn witness investigates:**
@@ -4192,52 +4203,70 @@ class SenderWitness:
 
 ```
 PUBLIC INPUTS:                 PRIVATE INPUTS:
-• H(sender_commitment)         • sender_commitment (full)
-• H(recipient_commitment)      • recipient_commitment (full)
-• amount_commit                • sigma_s, sigma_r
-• nullifier_commit             • sender_pk, recipient_sk
-• session_id                   • recipient_seq
-• beacon_round_1               • amount, blindings
-• beacon_round_23              • lineage_proof
-• witness_set_root_1           • previous_collapsed_proof
-• witness_seed_23              • seed_1
-• lineage_commit               • beacon_randomness_23
-• sender_forward_commit        • vrf_proofs_23
-• recipient_forward_commit
+- H(sender_commitment)         • sender_commitment (full)
+- H(recipient_commitment)      • recipient_commitment (full)
+- amount_commit                • recipient_sk
+- nullifier_commit             • recipient_base_seq
+- session_id                   • amount, blindings
+- beacon_round_1               • lineage_proof
+- beacon_round_23              • previous_collapsed_proof
+- witness_set_root_1           • seed_1
+- witness_seed_23              • sigma_r  (for H(σ_r) in seed chain only)
+- lineage_commit               • beacon_randomness_23
+- sender_forward_commit
+- recipient_forward_commit
 
-NOTE: witness_seed_1 and H(σ_r) are PRIVATE inputs. The circuit
-proves seed_23 = H(seed_1 || H(σ_r) || beacon_round_23 || randomness_23)
-without exposing seed_1 or H(σ_r) to verifiers. This prevents
-cross-phase linking via public inputs serialization.
+NOTE ON PRIVACY:
+  seed_1 and H(σ_r) are PRIVATE. The circuit proves
+    seed_23 = H(seed_1 || H(σ_r) || beacon_round_23 || randomness_23)
+  without exposing either value in public inputs. This prevents
+  cross-phase linking through serialized public inputs.
+
+NOTE ON SIGNATURES (σ_s, σ_r):
+  Neither σ_s nor σ_r is verified inside the circuit. Non-native
+  Ed25519 over Curve25519 inside BN254 would cost ~200–400k
+  constraints per signature; native verification costs microseconds.
+
+  σ_s: not a circuit input at all. W₂₃ witnesses verify it
+       natively (§21.2 B1b). It is bound into the fold hash chain
+       via sig_binding (§33.1). Third parties re-verify natively
+       from CollapsedProof.sigma_s against CollapsedProof.sender_pk
+       and CollapsedProof.sender_commitment_hash.
+
+  σ_r: present as a PRIVATE WITNESS for seed-chain derivation
+       only. The circuit hashes σ_r to compute H(σ_r) for
+       constraint 8 — it does NOT verify σ_r as a valid Ed25519
+       signature. σ_r validity is witness-verified natively
+       (§21.2 B1c) and fold-bound identically to σ_s.
 
 PROVES:
-1. [WITNESS-VERIFIED, NOT CIRCUIT-PROVEN] σ_s validity is verified
-   natively by W₂₃ witnesses (§21.2 B1b) and bound into the fold
-   hash chain (§33.1). Removed from circuit to avoid ~200-400k
-   non-native constraints (Ed25519 over Curve25519 inside BN254).
-2. [WITNESS-VERIFIED, NOT CIRCUIT-PROVEN] σ_r validity is verified
-   natively by W₂₃ witnesses (§21.2 B1c) and bound into the fold
-   hash chain (§33.1). σ_r remains as private input for seed chain
-   derivation (constraint 10: H(σ_r) in seed₂₃).
-3. Recipient owns sk: H(derive_pk(recipient_sk)) = recipient_pk_commit
-4. Recipient slot: slot_commit = H("inat_slot:" || recipient_sk || (recipient_base_seq + SEQ_STRIDE))
-   Where recipient_base_seq is the recipient's protocol_seq before this transaction.
-5. amount_commits match (sender = recipient)
-6. session_ids match (sender_commitment.session_id = recipient_commitment.session_id)
-7. recipient_commitment.sender_nullifier_commit = nullifier_commit
-8. recipient_commitment.sender_commitment_hash = H(sender_commitment)
-9. witness_set_root_1 = sender_commitment.witness_tpk    [W₁ binding]
-10. witness_seed_23 = H(seed_1 || H(σ_r) || beacon_round_23 || beacon_randomness_23)
-11. sender_forward_commit = sender_commitment.sender_forward_commit
-12. recipient_forward_commit = H("inat_slot:" || recipient_sk || (recipient_base_seq + 2 * SEQ_STRIDE))
-13. Lineage valid (chain to genesis per §35)
+1. Recipient owns sk:
+   H(derive_pk(recipient_sk)) = recipient_commitment.recipient_pk_commit
+2. Recipient slot derivation:
+   recipient_commitment.slot_commit
+     = H("inat_slot:" || recipient_sk || (recipient_base_seq + SEQ_STRIDE))
+3. amount_commit matches between sender_commitment and recipient_commitment
+4. session_ids match between sender_commitment and recipient_commitment
+5. recipient_commitment.sender_nullifier_commit = nullifier_commit
+6. recipient_commitment.sender_commitment_hash = H(sender_commitment)
+7. witness_set_root_1 = sender_commitment.witness_tpk      [W₁ binding]
+8. witness_seed_23 = H(seed_1 || H(σ_r) || beacon_round_23
+                       || beacon_randomness_23)
+9. sender_forward_commit = sender_commitment.sender_forward_commit
+10. recipient_forward_commit
+     = H("inat_slot:" || recipient_sk
+         || (recipient_base_seq + 2 * SEQ_STRIDE))
+11. Lineage valid (chain to genesis per §35)
 
 DOES NOT PROVE:
-- σ_s, σ_r signature validity (witness-verified natively per §21.2
-  B1b/B1c; bound into fold hash chain per §33.1; third parties
-  verify from fold public data using native Ed25519)
-- W₂₃ witness set binding (W₂₃ verified by VRF + seed chain;
-  fold circuit binds retroactively)
+- σ_s signature validity — witness-verified natively (§21.2 B1b),
+  fold-bound (§33.1), third-party verified from CollapsedProof.
+- σ_r signature validity — witness-verified natively (§21.2 B1c),
+  fold-bound (§33.1), third-party verified from CollapsedProof.
+  (σ_r's bytes are used inside the circuit only to derive H(σ_r)
+  for the seed chain.)
+- W₂₃ witness set binding — W₂₃ verified by VRF + seed chain at
+  attestation time; fold circuit binds the set retroactively.
 ```
 
 ```python
@@ -4328,10 +4357,13 @@ INPUTS:
 - previous_registry_root (from previous_fold.issuer_registry_root,
   or == issuer_registry_root if depth=1)
 - genesis_record + genesis_issuer_sig (depth=1 only)
-- sigma_s: bytes                   # Sender signature (not ZK-proven; fold-bound for third-party verification)
-- sigma_r: bytes                   # Recipient signature (not ZK-proven; fold-bound for third-party verification)
-- sender_pk: bytes                 # For third-party native Ed25519 verification of σ_s
-- recipient_pk: bytes              # For third-party native Ed25519 verification of σ_r
+NON-CIRCUIT INPUTS (bound into fold hash chain, not in constraint system):
+- sigma_s: bytes                   # Sender signature, native-verified by third parties
+- sigma_r: bytes                   # Recipient signature, native-verified by third parties
+- sender_pk: bytes                 # For σ_s native Ed25519 verification
+- recipient_pk: bytes              # For σ_r native Ed25519 verification
+These are bound via sig_binding = H(σ_s || σ_r || sender_pk || recipient_pk)
+which appears in fold_value (§33.1). They do NOT generate constraints.
 - w1_vrf_proofs: List[(witness_pk, vrf_output, vrf_proof)]  # quorum entries
 • w23_vrf_proofs: List[(witness_pk, vrf_output, vrf_proof)] # quorum entries
 • w4_vrf_proofs: List[(witness_pk, vrf_output, vrf_proof)]  # 7 entries
@@ -4458,17 +4490,19 @@ PROVES:
     - len(w1_quorum attestations) >= WITNESS_QUORUM
     - Same enforced for w23
 
-13. SIGNATURE BINDING (not verified in ZK — bound by hash):
-    - H(sigma_s || sigma_r || sender_pk || recipient_pk) is included
-      in fold_value (§33.1). This commits the signatures into the
-      hash chain without performing non-native Ed25519 verification.
-    - Third-party verifiers check σ_s and σ_r natively from fold
+13. SIGNATURE HASH BINDING (hash-chain only — no in-circuit verification):
+    - sig_binding = H(sigma_s || sigma_r || sender_pk || recipient_pk ||
+                    sender_commitment_hash || recipient_commitment_hash)
+      is included in fold_value (§33.1). This commits the signature
+      bytes into the hash chain without performing non-native Ed25519
+      verification inside BN254.
+    - Third-party verifiers check σ_s and σ_r natively from CollapsedProof
       public data (~microseconds per Ed25519 verify).
     - Security argument: witnesses verified signatures in real-time
       (§21.2 B1b/B1c). Fold binds the exact bytes they verified.
-      A forged signature would require either (a) 13+ colluding
-      witnesses who skip verification, or (b) replacing the
-      signature bytes after fold — prevented by hash chain binding.
+      A forged signature would require either (a) WITNESS_QUORUM (21)
+      colluding witnesses who all skip verification, or (b) replacing
+      the signature bytes after fold — prevented by hash chain binding.
 
 14. BEACON RECENCY CHAIN:
     - If previous_fold exists:
@@ -4551,8 +4585,8 @@ CollapsedProof is opaque bytes. The verifier dispatches on prefix:
 | `b"INAT_GENESIS_PROOF:"` | v1 | Recompute genesis hash, check signature |
 | `b"INAT_FOLDED_PROOF:"` | v1 | Recompute hash chain, check signature |
 | `b"INAT_IVC_PROOF:"` | v2 (future) | Nova IVC SNARK verification |
-| FOLD | v1: N/A (attested hash-chain, no circuit). v2 (not planned): ~700k (includes VRF batch verify) | v1: no setup. v2: Phase 2 from shared Phase 1 SRS |
-| VRF_BATCH | ~200k (v2 only, not planned) | Phase 2 from shared Phase 1 SRS |
+| FOLD | v1: N/A (attested hash-chain, no circuit). v2 (not planned): ~700k (includes VRF batch verify) | v1: no setup. v2: Groth16 Phase 2 per circuit |
+| VRF_BATCH | ~200k (v2 only, not planned) | Groth16 Phase 2 per circuit |
 
 v2 proofs can be introduced without breaking CollapsedProof
 serialization. Old v1 proofs remain verifiable indefinitely.
@@ -4764,24 +4798,24 @@ class SweepPrivateInputs:
 
 ### Donation Circuit Variant
 
-Optional variant of π₁ and π₂₃ that adds pool_pk as 14th entry in
-witness_root. Sender pays 14 × fee_share instead of 13. Witnesses
+Optional variant of π₁ and π₂₃ that adds pool_pk as 22nd entry in
+witness_root. Sender pays 22 × fee_share instead of 21. Witnesses
 earn identically. User opts in via wallet UX.
 
 ```
 PHASE 1 DONATION VARIANT (π₁_d):
   All standard π₁ constraints, plus:
-  • witness_count = 14 (not 13)
-  • witness_set[13] = pool_pk
+  • witness_count = 22 (not 21)
+  • witness_set[21] = pool_pk
   • H(pool_pk) == HARDCODED_POOL_ID (constant in circuit)
   • pool_pk is NOT VRF-verified (exempt from selection check)
-  • total_fee = 14 × fee_share (not 13)
-  • balance check: input >= amount + change + (14 × fee_share)
+  • total_fee = 22 × fee_share (not 21)
+  • balance check: input >= amount + change + (22 × fee_share)
 
 PHASE 2 DONATION VARIANT (π₂₃_d):
   All standard π₂₃ constraints, plus:
-  • Same 14-entry witness_root binding
-  • fee_commit covers 14 shares
+  • Same 22-entry witness_root binding
+  • fee_commit covers 22 shares
 
 FOLD CIRCUIT:
   Accepts either variant. The fold verifies "previous proof valid +
@@ -4823,6 +4857,9 @@ class CollapsedProof:
     sigma_r: bytes                      # Recipient signature over H(recipient_commitment)
     sender_pk: bytes                    # For σ_s verification
     recipient_pk: bytes                 # For σ_r verification
+    # Bilateral commitment hashes (the signed payloads for σ_s / σ_r)
+    sender_commitment_hash: bytes         # H(SenderCommitment) — σ_s signs this
+    recipient_commitment_hash: bytes      # H(RecipientCommitment) — σ_r signs this
     # Issuer eligibility (self-contained header, not a blob CID)
     issuer_eligible_root: bytes           # header.eligible_root for this fold step
     eligible_root_epoch: int              # header.epoch_number
@@ -4853,11 +4890,9 @@ class CollapsedProof:
         # Native bilateral signature verification (~microseconds each)
         # These were witness-verified at attestation time (§21.2 B1b/B1c)
         # and hash-bound into fold_value. Verify here for third-party assurance.
-        sender_commit_hash = H(self._sender_commitment_bytes())
-        if not Ed25519_Verify(self.sender_pk, sender_commit_hash, self.sigma_s):
+        if not Ed25519_Verify(self.sender_pk, self.sender_commitment_hash, self.sigma_s):
             return False
-        recipient_commit_hash = H(self._recipient_commitment_bytes())
-        if not Ed25519_Verify(self.recipient_pk, recipient_commit_hash, self.sigma_r):
+        if not Ed25519_Verify(self.recipient_pk, self.recipient_commitment_hash, self.sigma_r):
             return False
         return True
 
@@ -4930,16 +4965,16 @@ class CapacityPrivateInputs:
 
 ### Proof System Summary
 
-Phase circuits: PLONK (BN254), ~2.5KB each, ~5ms verification.
-Universal trusted setup: powers-of-tau only. No per-circuit ceremony.
+Phase circuits: Groth16 (BN254), ~192 bytes each, ~5ms verification.
+Per-circuit trusted setup: universal Phase 1 (powers-of-tau) + per-circuit Phase 2 ceremony.
 Fold: attested hash-chain (~364 bytes, <1ms verification).
 
-Constraint counts (PLONK circuits):
+Constraint counts (Groth16 circuits):
 sender: ~55k (includes tier range proof), combined: ~65k (signatures witness-verified, not circuit-proven),
 sweep: ~200k (variable), recovery: ~120k, capacity: ~15k,
 donation_sender: ~56k, donation_combined: ~66k (signatures witness-verified).
 Fold (v1): no circuit (attested hash-chain, <1ms verification).
-Fold (v2, not planned): ~200k PLONK constraints (includes eligibility Merkle proofs + issuer sig).
+Fold (v2, not planned): ~200k Groth16 constraints (includes eligibility Merkle proofs + issuer sig).
 
 VERIFICATION_KEYS / PROVING_KEYS exist for:
   sender, combined, sweep, recovery, capacity,
@@ -5479,11 +5514,6 @@ PAYLOAD_ATTESTATION_TIMEOUT = 20    # seconds (payload → attestation round)
 SHARE_DELIVERY_TIMEOUT = 30         # seconds (sender → W₁ share delivery)
 W1_FORWARD_TIMEOUT = 120            # seconds after W₂₃ quorum before recipient
                                     # independently forwards W₂₃ bundle to W₁ (§20.2 step 20)
-N_MIN = 100_000                      # Minimum network size for activation.
-                                    # Below N_MIN: bootstrap mode, transactions rejected.
-                                    # Used by: BootstrapManager (activation gate),
-                                    # VRFDensityGate (threshold computation),
-                                    # DynamicParameters (first network tier floor).
 FEE_SHARE = 10                      # Per-witness. Total fee = tier.quorum × FEE_SHARE
 SEQ_STRIDE = 4                      # Protocol_seq increments per party per transaction.
                                     # One entry per phase transition:
@@ -5497,9 +5527,12 @@ SEQ_STRIDE = 4                      # Protocol_seq increments per party per tran
                                     # base + SEQ_STRIDE regardless of abort phase.
                                     # INVARIANT: Every doc write = exactly one seq increment.
                                     # Supplementary data goes in blobs; doc entry carries CIDs.
-VRF_THRESHOLD = (VRF_TARGET_WITNESSES / SHARD_TARGET_SIZE)  # × 2^256 in field
+VRF_TARGET_INVITES = 45              # Oversample to absorb VRF variance
+VRF_THRESHOLD = (VRF_TARGET_INVITES / SHARD_TARGET_SIZE)  # × 2^256 in field
 # Hardcoded. Shard depth absorbs network growth.
 # Never recomputed. Never density-dependent.
+# At TARGET density, E[selected] ≈ 45, μ−2σ ≈ 32 ≥ WITNESS_TOTAL.
+# Sender collects up to WITNESS_TOTAL (29) by diversity-rank, WITNESS_QUORUM (21) fee-eligible.
 
 # --- Issuer-Gated Eligibility ---
 ISSUER_ELIGIBLE_ROOT_EPOCH = 3600   # 1 hour
@@ -5575,10 +5608,13 @@ SWEEP_TIME_THRESHOLD = 604800           # 7 days (seconds)
 
 # --- Sweep Accumulator ---
 SWEEP_LEAF_DOMAIN = b"inat_sweep_leaf:"
-MAX_SWEEP_BATCH_SIZE = 5000        # Max claims per sweep proof
-                                    # (circuit constraint count scales
-                                    # linearly — ~40 constraints per
-                                    # non-membership proof)
+MAX_SWEEP_BATCH_SIZE = 1500        # Max claims per sweep proof.
+                                    # Budget: ~200k base + 1500×40 = 60k
+                                    # non-membership + 1500×log₂(1500) ≈ 16k
+                                    # root recomputation ≈ 276k constraints.
+                                    # Fits within 2^18 SRS with headroom.
+                                    # Larger batches require SRS upgrade or
+                                    # multiple sweep proofs.
 SWEEP_ACCUMULATOR_GC_EPOCHS = 100  # Archive leaf sets older than this
                                     # can be pruned. The current
                                     # sweep_root is sufficient for
@@ -6006,7 +6042,7 @@ def verify_gossip_update(message: SequenceUpdate, originator_pk: bytes) -> bool:
 | Donation Circuit | Optional variant of π₁/π₂₃ that adds pool_pk as 14th entry in witness_root. Sender pays 14 × fee_share instead of 13. Witnesses earn identically. User opts in via wallet UX. |
 | Donation Receipt | 104-byte record pushed to issuer-sharded inbox during finalization of donation-circuit transactions. Contains spend_record_cid, donation_commit, issuer_family_id, epoch. Enables guardian discovery of claimable SpendRecords. |
 | Fee Gap | Difference between transaction inputs and outputs. Exists as a proven deduction with no output slot. Claimed later via sweep. |
-| Ghost Witness | Donation guardian's pool_pk when included as 14th entry in witness_root. Not VRF-selected. Circuit-hardcoded. Sweeps using same unified circuit as real witnesses. |
+| Ghost Witness | Donation guardian's pool_pk when included as 22nd entry in witness_root. Not VRF-selected. Circuit-hardcoded. Sweeps using same unified circuit as real witnesses. |
 | Guardian | Holder of pool_sk corresponding to the hardcoded pool_id. Collects donation claims via unified sweep. Chooses target wallet freely at sweep time. Has no special protocol privileges. |
 | Issuer-Sharded Inbox | Receipt routing destination at H(pool_pk || issuer_family_id). Separates donation receipts by issuer so guardian queries only issuers worth sweeping. |
 | pool_id | H(pool_pk) — hardcoded identity tag in the donation circuit. Not a wallet address. Not a destination. A claim marker that the guardian can prove ownership of at sweep time. |
@@ -7190,7 +7226,7 @@ class Attestation:
 
 @dataclass
 class FeeAttestation:
-    """First 13 by timestamp get fees."""
+    """First WITNESS_QUORUM (21) by timestamp get fees."""
     witness_pk: bytes
     witness_index: int
     session_id: bytes
@@ -7224,24 +7260,24 @@ class WitnessBundle:
     session_id: bytes
     spend_record_cid: bytes             # Always set (published after SpendRecord)
     beacon_round: int
-    fee_attestations: List[FeeAttestation]      # Always exactly 13 real attestations
+    fee_attestations: List[FeeAttestation]      # Always exactly WITNESS_QUORUM (21) real attestations
     additional_attestations: List[Attestation]
     donation: bool = False                      # True → 14-entry witness_root
     pool_pk: Optional[bytes] = None             # Present iff donation=True
 
     @property
     def is_valid(self) -> bool:
-        return len(self.fee_attestations) >= WITNESS_QUORUM  # Always 13
+        return len(self.fee_attestations) >= WITNESS_QUORUM  # Always 21
 
     @property
     def witness_count(self) -> int:
-        """Fee-earning entries: 13 (standard) or 14 (donation)."""
-        return 14 if self.donation else WITNESS_QUORUM
+        """Fee-earning entries: 21 (standard) or 22 (donation)."""
+        return (WITNESS_QUORUM + 1) if self.donation else WITNESS_QUORUM
 
     def get_witness_root(self) -> bytes:
         """Merkle root of fee-earning entries.
-        Standard: 13 leaves (witness PKs from fee_attestations).
-        Donation: 14 leaves (13 witness PKs + pool_pk as 14th leaf).
+        Standard: 21 leaves (witness PKs from fee_attestations).
+        Donation: 22 leaves (21 witness PKs + pool_pk as 22nd leaf).
         pool_pk is NOT a FeeAttestation — it never attested."""
         leaves = [a.witness_pk for a in self.fee_attestations[:WITNESS_QUORUM]]
         if self.donation and self.pool_pk:
